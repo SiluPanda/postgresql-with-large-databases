@@ -1,0 +1,365 @@
+	
+1.	
+
+explain analyze select count(*) from course c where exists (select * from takes t where t.course_id = c.course_id)
+
+--------------------------Query plan---------------------------------
+
+"Aggregate  (cost=254.30..254.31 rows=1 width=8)"
+"  ->  Nested Loop Semi Join  (cost=0.29..254.08 rows=85 width=0)"
+"        ->  Seq Scan on course c  (cost=0.00..4.00 rows=200 width=4)"
+"        ->  Index Only Scan using takes_pkey on takes t  (cost=0.29..237.10 rows=353 width=4)"
+"              Index Cond: (course_id = (c.course_id)::text)"
+
+Explaination: The query does a Index only scan on takes and matches the values in column course_id in course relation by a sequence scan.
+We get a semi join because we only want the columns from the course relation which have a "match" in takes i.e. we have a takes row with a course_id matching that in the outer loop. If a match is found then the particular tuple in course is kept otherwise thrown away (semi join). Then aggregation is done for count function.
+
+########################################################################
+
+2.
+
+explain analyze select count(*) from course c where exists (select * from takes t where t.course_id = c.course_id)
+
+------------------------Query plan----------------------------------
+	
+"Aggregate  (cost=254.37..254.38 rows=1 width=8) (actual time=114.523..114.523 rows=1 loops=1)"
+"  ->  Nested Loop Anti Join  (cost=0.29..254.08 rows=115 width=0) (actual time=1.354..114.505 rows=115 loops=1)"
+"        ->  Seq Scan on course c  (cost=0.00..4.00 rows=200 width=4) (actual time=0.012..0.030 rows=200 loops=1)"
+"        ->  Index Only Scan using takes_pkey on takes t  (cost=0.29..237.10 rows=353 width=4) (actual time=0.572..0.572 rows=0 loops=200)"
+"              Index Cond: (course_id = (c.course_id)::text)"
+"              Heap Fetches: 85"
+"Planning time: 1.901 ms"
+"Execution time: 114.551 ms"
+
+Explaination: We get a anti join because we only want the columns from the course relation which don't have a "match" in takes i.e. we don't have any takes row with a course_id matching that in the outer loop. Since course_id is a part of the primary key, postgres decides to do an index scan using the primary key index. This happens for all tuples in course. If no match is found then the particular tuple in course is kept otherwise thrown away (anti join).
+
+#######################################################################
+
+3.
+
+explain analyze select * from course where (select count(*) from takes where takes.course_id=course.course_id) > 300;
+
+---------------------------Query plan-------------------------------
+
+"Seq Scan on course  (cost=0.00..119183.00 rows=67 width=35) (actual time=50.283..505.334 rows=47 loops=1)"
+"  Filter: ((SubPlan 1) > 300)"
+"  Rows Removed by Filter: 153"
+"  SubPlan 1"
+"    ->  Aggregate  (cost=595.88..595.89 rows=1 width=8) (actual time=2.526..2.526 rows=1 loops=200)"
+"          ->  Seq Scan on takes  (cost=0.00..595.00 rows=353 width=0) (actual time=1.445..2.515 rows=150 loops=200)"
+"                Filter: ((course_id)::text = (course.course_id)::text)"
+"                Rows Removed by Filter: 29850"
+"Planning time: 2.938 ms"
+"Execution time: 505.418 ms"
+
+#######################################################################
+
+
+4. 
+
+explain analyze with t1 as (select distinct course_id from takes) 
+select * from course, t1 where t1.course_id=course.course_id;
+
+--------------------------Query plan--------------------------------
+
+"Hash Join  (cost=598.61..604.21 rows=85 width=69) (actual time=15.162..15.206 rows=85 loops=1)"
+"  Hash Cond: ((course.course_id)::text = (t1.course_id)::text)"
+"  CTE t1"
+"    ->  HashAggregate  (cost=595.00..595.85 rows=85 width=4) (actual time=15.056..15.065 rows=85 loops=1)"
+"          Group Key: takes.course_id"
+"          ->  Seq Scan on takes  (cost=0.00..520.00 rows=30000 width=4) (actual time=0.013..4.126 rows=30000 loops=1)"
+"  ->  Seq Scan on course  (cost=0.00..4.00 rows=200 width=35) (actual time=0.022..0.034 rows=200 loops=1)"
+"  ->  Hash  (cost=1.70..1.70 rows=85 width=34) (actual time=15.101..15.101 rows=85 loops=1)"
+"        Buckets: 1024  Batches: 1  Memory Usage: 11kB"
+"        ->  CTE Scan on t1  (cost=0.00..1.70 rows=85 width=34) (actual time=15.059..15.082 rows=85 loops=1)"
+"Planning time: 0.340 ms"
+"Execution time: 15.295 ms"
+
+#######################################################################
+
+5.
+
+explain analyze create materialized view view_t as select c.course_id, count(ID) from course c, takes t where t.course_id = c.course_id group by c.course_id;
+
+---------------------------Query plan----------------------------------
+
+"HashAggregate  (cost=756.92..758.92 rows=200 width=12) (actual time=33.587..33.616 rows=85 loops=1)"
+"  Group Key: c.course_id"
+"  ->  Hash Join  (cost=6.50..606.92 rows=30000 width=9) (actual time=0.231..20.197 rows=30000 loops=1)"
+"        Hash Cond: ((t.course_id)::text = (c.course_id)::text)"
+"        ->  Seq Scan on takes t  (cost=0.00..520.00 rows=30000 width=9) (actual time=0.017..4.969 rows=30000 loops=1)"
+"        ->  Hash  (cost=4.00..4.00 rows=200 width=4) (actual time=0.188..0.188 rows=200 loops=1)"
+"              Buckets: 1024  Batches: 1  Memory Usage: 16kB"
+"              ->  Seq Scan on course c  (cost=0.00..4.00 rows=200 width=4) (actual time=0.013..0.078 rows=200 loops=1)"
+"Planning time: 0.513 ms"
+"Execution time: 42.960 ms"
+
+#########################################################################
+
+6.
+
+explain analyze select count(*) from view_t;
+
+-------------------------Query plan--------------------------------------
+
+"Aggregate  (cost=24.50..24.51 rows=1 width=8) (actual time=0.057..0.057 rows=1 loops=1)"
+"  ->  Seq Scan on view_t  (cost=0.00..21.60 rows=1160 width=0) (actual time=0.017..0.033 rows=85 loops=1)"
+"Planning time: 0.836 ms"
+"Execution time: 0.109 ms"
+
+Explaination: estimated cost: 24.51
+			  actual time: 0.109 ms
+
+----------------------------------------------------------------------
+
+explain analyze select count(*) from (select c.course_id, count(ID) from course c, takes t where t.course_id = c.course_id group by c.course_id) as silu;
+
+-------------------------Query plan--------------------------------------
+
+"Aggregate  (cost=686.42..686.43 rows=1 width=8) (actual time=11.328..11.328 rows=1 loops=1)"
+"  ->  HashAggregate  (cost=681.92..683.92 rows=200 width=12) (actual time=11.312..11.321 rows=85 loops=1)"
+"        Group Key: c.course_id"
+"        ->  Hash Join  (cost=6.50..606.92 rows=30000 width=4) (actual time=0.058..6.921 rows=30000 loops=1)"
+"              Hash Cond: ((t.course_id)::text = (c.course_id)::text)"
+"              ->  Seq Scan on takes t  (cost=0.00..520.00 rows=30000 width=4) (actual time=0.006..1.851 rows=30000 loops=1)"
+"              ->  Hash  (cost=4.00..4.00 rows=200 width=4) (actual time=0.047..0.047 rows=200 loops=1)"
+"                    Buckets: 1024  Batches: 1  Memory Usage: 16kB"
+"                    ->  Seq Scan on course c  (cost=0.00..4.00 rows=200 width=4) (actual time=0.003..0.022 rows=200 loops=1)"
+"Planning time: 2.260 ms"
+"Execution time: 11.358 ms"
+
+Explaination: estimated cost : 686.43
+			  actual time : 11.358 ms
+
+
+#########################################################################
+
+7.
+
+explain analyze select count(*) from panda where id = '14182';
+
+-------------------------Query plan--------------------------------------
+
+"Aggregate  (cost=389.31..389.32 rows=1 width=8) (actual time=8.091..8.091 rows=1 loops=1)"
+"  ->  Seq Scan on panda  (cost=0.00..389.21 rows=39 width=0) (actual time=0.095..8.079 rows=19 loops=1)"
+"        Filter: ((id)::text = '14182'::text)"
+"        Rows Removed by Filter: 29981"
+"Planning time: 1.132 ms"
+"Execution time: 8.149 ms"
+
+-------------------------------------------------------------------------
+
+explain analyze select count(*) from (select * from takes natural join student) as sp where id = '14182';
+
+-------------------------Query plan------------------------------------
+
+"Aggregate  (cost=61.32..61.33 rows=1 width=8) (actual time=0.960..0.960 rows=1 loops=1)"
+"  ->  Nested Loop  (cost=4.68..61.29 rows=15 width=0) (actual time=0.906..0.949 rows=19 loops=1)"
+"        ->  Index Only Scan using student_pkey on student  (cost=0.28..8.29 rows=1 width=5) (actual time=0.850..0.852 rows=1 loops=1)"
+"              Index Cond: (id = '14182'::text)"
+"              Heap Fetches: 1"
+"        ->  Bitmap Heap Scan on takes  (cost=4.40..52.84 rows=15 width=5) (actual time=0.043..0.080 rows=19 loops=1)"
+"              Recheck Cond: ((id)::text = '14182'::text)"
+"              Heap Blocks: exact=18"
+"              ->  Bitmap Index Scan on takes_pkey  (cost=0.00..4.40 rows=15 width=0) (actual time=0.032..0.032 rows=19 loops=1)"
+"                    Index Cond: ((id)::text = '14182'::text)"
+"Planning time: 3.233 ms"
+"Execution time: 1.041 ms"
+
+Observation: -The time taken in case of materialized view is more because it has to do a sequential search while the other one can do an index search. 
+Generally, the optimiser should have checked if the materialized view has a index defined on it, if not then it should have checked whether indexes on the tables which were used to define the view can be used for the query plan.
+
+########################################################################
+
+8.
+
+explain analyze select count(*) from bigtakes;
+
+---------------------------Query plan-----------------------------------
+
+"Finalize Aggregate  (cost=5378.15..5378.16 rows=1 width=8) (actual time=36.061..36.061 rows=1 loops=1)"
+"  ->  Gather  (cost=5377.93..5378.14 rows=2 width=8) (actual time=36.011..37.894 rows=3 loops=1)"
+"        Workers Planned: 2"
+"        Workers Launched: 2"
+"        ->  Partial Aggregate  (cost=4377.93..4377.94 rows=1 width=8) (actual time=23.398..23.398 rows=1 loops=3)"
+"              ->  Parallel Seq Scan on bigtakes  (cost=0.00..4205.75 rows=68875 width=0) (actual time=0.014..13.748 rows=160000 loops=3)"
+"Planning time: 0.670 ms"
+"Execution time: 37.943 ms"
+
+Explaination: Due to large size of the table, the work is divided into 2 workes and a base process, so total 3. They will individually calculate their portion and gather to output the total count.
+
+#######################################################################
+
+9.
+9.1.
+
+In window one:
+-----------------------------------
+
+postgres=# begin;
+BEGIN
+postgres=# set transaction isolation level serializable;
+SET
+postgres=# select tot_cred from student where name = 'Keiss';
+ tot_cred 
+----------
+       59
+(1 row)
+
+postgres=# update student set tot_cred = 55 where name = 'Keiss';
+UPDATE 1
+postgres=# commit;
+COMMIT
+
+
+In window two:
+------------------------------------
+
+postgres=# begin;
+BEGIN
+postgres=# set transaction isolation level serializable;
+SET
+postgres=# select tot_cred from student where name = 'Keiss';
+ tot_cred 
+----------
+       59
+(1 row)
+
+postgres=# select tot_cred from student where name = 'Keiss';
+ tot_cred 
+----------
+       59
+(1 row)
+
+postgres=# commit;
+COMMIT
+
+Explaination 1: As it was not yet commited, hence it showed the locally saved copy for the query.
+
+Explaination 2: As the transaction isolation level is serializable, the query makes two local snapshots and it won't merge.
+
+----------------------------------------------------------------------
+
+9.2
+
+postgres=# select id, salary from instructor where id in('63395', '78699');
+  id   |  salary  
+-------+----------
+ 63395 | 94333.99
+ 78699 | 59303.62
+(2 rows)
+
+In window 1:
+---------------------------------
+
+postgres=# begin;
+BEGIN
+postgres=# set transaction isolation level serializable;
+SET
+postgres=# update instructor set salary = (select salary from instructor where id = '63395') where id = '78699';
+UPDATE 1
+postgres=# commit;
+COMMIT
+
+In window 2:
+---------------------------------
+
+postgres=# begin;
+BEGIN
+postgres=# set transaction isolation level serializable;
+SET
+postgres=# update instructor set salary = (select salary from instructor where id = '78699') where id = '63395';
+UPDATE 1
+postgres=# commit;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+DETAIL:  Reason code: Canceled on identification as a pivot, during commit attempt.
+HINT:  The transaction might succeed if retried.
+postgres=# select id, salary from instructor where id in('63395', '78699');
+  id   |  salary  
+-------+----------
+ 63395 | 94333.99
+ 78699 | 94333.99
+(2 rows)
+
+
+Explaination:
+
+The query commited first was successful. The other one got the above error. This is because both of them were working on their own snapshots. After one of them commits, the other one is not allowing to commit becuase the query in the first window read a value from the table in an update query which has now gotten updated i.e. if the same query was run on the original database it would have lead to a different result. To avoid this conflict, postgres raises an error.
+
+------------------------------------------------------------------------
+
+9.3. 
+
+In window 1:
+--------------------------------
+
+postgres=# begin;
+BEGIN
+postgres=# set transaction isolation level read committed;
+SET
+postgres=# update instructor set salary = (select salary from instructor where id = '63395') where id = '78699';
+UPDATE 1
+postgres=# commit;
+COMMIT
+postgres=# select id, salary from instructor where id in('63395', '78699');
+  id   |  salary  
+-------+----------
+ 78699 | 94333.99
+ 63395 | 94333.99
+(2 rows)
+
+
+In window 2:
+--------------------------------
+
+postgres=# begin;
+BEGIN
+postgres=# set transaction isolation level read committed;
+SET
+postgres=# update instructor set salary = (select salary from instructor where id = '78699') where id = '63395';
+UPDATE 1
+postgres=# commit;
+COMMIT
+postgres=# select id, salary from instructor where id in('63395', '78699');
+  id   |  salary  
+-------+----------
+ 78699 | 94333.99
+ 63395 | 94333.99
+(2 rows)
+
+
+Explaination:
+
+As the transaction isolation level is set to read commited, hence it avoids the conflicts and reads till the commited. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
